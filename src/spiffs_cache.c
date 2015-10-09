@@ -11,7 +11,7 @@
 #if SPIFFS_CACHE
 
 // returns cached page for give page index, or null if no such cached page
-static spiffs_cache_page *ICACHE_FLASH_ATTR spiffs_cache_page_get(spiffs *fs, spiffs_page_ix pix) {
+static spiffs_cache_page *spiffs_cache_page_get(spiffs *fs, spiffs_page_ix pix) {
   spiffs_cache *cache = spiffs_get_cache(fs);
   if ((cache->cpage_use_map & cache->cpage_use_mask) == 0) return 0;
   int i;
@@ -30,7 +30,7 @@ static spiffs_cache_page *ICACHE_FLASH_ATTR spiffs_cache_page_get(spiffs *fs, sp
 }
 
 // frees cached page
-static s32_t ICACHE_FLASH_ATTR spiffs_cache_page_free(spiffs *fs, int ix, u8_t write_back) {
+static s32_t spiffs_cache_page_free(spiffs *fs, int ix, u8_t write_back) {
   s32_t res = SPIFFS_OK;
   spiffs_cache *cache = spiffs_get_cache(fs);
   spiffs_cache_page *cp = spiffs_get_cache_page_hdr(fs, cache, ix);
@@ -39,7 +39,7 @@ static s32_t ICACHE_FLASH_ATTR spiffs_cache_page_free(spiffs *fs, int ix, u8_t w
         (cp->flags & SPIFFS_CACHE_FLAG_TYPE_WR) == 0 &&
         (cp->flags & SPIFFS_CACHE_FLAG_DIRTY)) {
       u8_t *mem =  spiffs_get_cache_page(fs, cache, ix);
-      res = fs->cfg.hal_write_f(SPIFFS_PAGE_TO_PADDR(fs, cp->pix), SPIFFS_CFG_LOG_PAGE_SZ(fs), mem);
+      res = SPIFFS_HAL_WRITE(fs, SPIFFS_PAGE_TO_PADDR(fs, cp->pix), SPIFFS_CFG_LOG_PAGE_SZ(fs), mem);
     }
 
     cp->flags = 0;
@@ -56,7 +56,7 @@ static s32_t ICACHE_FLASH_ATTR spiffs_cache_page_free(spiffs *fs, int ix, u8_t w
 }
 
 // removes the oldest accessed cached page
-static s32_t ICACHE_FLASH_ATTR spiffs_cache_page_remove_oldest(spiffs *fs, u8_t flag_mask, u8_t flags) {
+static s32_t spiffs_cache_page_remove_oldest(spiffs *fs, u8_t flag_mask, u8_t flags) {
   s32_t res = SPIFFS_OK;
   spiffs_cache *cache = spiffs_get_cache(fs);
 
@@ -86,7 +86,7 @@ static s32_t ICACHE_FLASH_ATTR spiffs_cache_page_remove_oldest(spiffs *fs, u8_t 
 }
 
 // allocates a new cached page and returns it, or null if all cache pages are busy
-static spiffs_cache_page *ICACHE_FLASH_ATTR spiffs_cache_page_allocate(spiffs *fs) {
+static spiffs_cache_page *spiffs_cache_page_allocate(spiffs *fs) {
   spiffs_cache *cache = spiffs_get_cache(fs);
   if (cache->cpage_use_map == 0xffffffff) {
     // out of cache memory
@@ -107,7 +107,7 @@ static spiffs_cache_page *ICACHE_FLASH_ATTR spiffs_cache_page_allocate(spiffs *f
 }
 
 // drops the cache page for give page index
-void ICACHE_FLASH_ATTR spiffs_cache_drop_page(spiffs *fs, spiffs_page_ix pix) {
+void spiffs_cache_drop_page(spiffs *fs, spiffs_page_ix pix) {
   spiffs_cache_page *cp =  spiffs_cache_page_get(fs, pix);
   if (cp) {
     spiffs_cache_page_free(fs, cp->ix, 0);
@@ -117,13 +117,14 @@ void ICACHE_FLASH_ATTR spiffs_cache_drop_page(spiffs *fs, spiffs_page_ix pix) {
 // ------------------------------
 
 // reads from spi flash or the cache
-s32_t ICACHE_FLASH_ATTR spiffs_phys_rd(
+s32_t spiffs_phys_rd(
     spiffs *fs,
     u8_t op,
     spiffs_file fh,
     u32_t addr,
     u32_t len,
     u8_t *dst) {
+  (void)fh;
   s32_t res = SPIFFS_OK;
   spiffs_cache *cache = spiffs_get_cache(fs);
   spiffs_cache_page *cp =  spiffs_cache_page_get(fs, SPIFFS_PADDR_TO_PAGE(fs, addr));
@@ -136,10 +137,7 @@ s32_t ICACHE_FLASH_ATTR spiffs_phys_rd(
   } else {
     if ((op & SPIFFS_OP_TYPE_MASK) == SPIFFS_OP_T_OBJ_LU2) {
       // for second layer lookup functions, we do not cache in order to prevent shredding
-      return fs->cfg.hal_read_f(
-          addr ,
-          len,
-          dst);
+      return SPIFFS_HAL_READ(fs, addr, len, dst);
     }
 #if SPIFFS_CACHE_STATS
     fs->cache_misses++;
@@ -150,8 +148,7 @@ s32_t ICACHE_FLASH_ATTR spiffs_phys_rd(
       cp->flags = SPIFFS_CACHE_FLAG_WRTHRU;
       cp->pix = SPIFFS_PADDR_TO_PAGE(fs, addr);
     }
-
-    s32_t res2 = fs->cfg.hal_read_f(
+    s32_t res2 = SPIFFS_HAL_READ(fs,
         addr - SPIFFS_PADDR_TO_PAGE_OFFSET(fs, addr),
         SPIFFS_CFG_LOG_PAGE_SZ(fs),
         spiffs_get_cache_page(fs, cache, cp->ix));
@@ -165,13 +162,14 @@ s32_t ICACHE_FLASH_ATTR spiffs_phys_rd(
 }
 
 // writes to spi flash and/or the cache
-s32_t ICACHE_FLASH_ATTR spiffs_phys_wr(
+s32_t spiffs_phys_wr(
     spiffs *fs,
     u8_t op,
     spiffs_file fh,
     u32_t addr,
     u32_t len,
     u8_t *src) {
+  (void)fh;
   spiffs_page_ix pix = SPIFFS_PADDR_TO_PAGE(fs, addr);
   spiffs_cache *cache = spiffs_get_cache(fs);
   spiffs_cache_page *cp =  spiffs_cache_page_get(fs, pix);
@@ -184,7 +182,7 @@ s32_t ICACHE_FLASH_ATTR spiffs_phys_wr(
         (op & SPIFFS_OP_TYPE_MASK) != SPIFFS_OP_T_OBJ_LU) {
       // page is being deleted, wipe from cache - unless it is a lookup page
       spiffs_cache_page_free(fs, cp->ix, 0);
-      return fs->cfg.hal_write_f(addr, len, src);
+      return SPIFFS_HAL_WRITE(fs, addr, len, src);
     }
 
     u8_t *mem =  spiffs_get_cache_page(fs, cache, cp->ix);
@@ -193,21 +191,21 @@ s32_t ICACHE_FLASH_ATTR spiffs_phys_wr(
     cache->last_access++;
     cp->last_access = cache->last_access;
 
-    if (cp->flags && SPIFFS_CACHE_FLAG_WRTHRU) {
+    if (cp->flags & SPIFFS_CACHE_FLAG_WRTHRU) {
       // page is being updated, no write-cache, just pass thru
-      return fs->cfg.hal_write_f(addr, len, src);
+      return SPIFFS_HAL_WRITE(fs, addr, len, src);
     } else {
       return SPIFFS_OK;
     }
   } else {
     // no cache page, no write cache - just write thru
-    return fs->cfg.hal_write_f(addr, len, src);
+    return SPIFFS_HAL_WRITE(fs, addr, len, src);
   }
 }
 
 #if SPIFFS_CACHE_WR
 // returns the cache page that this fd refers, or null if no cache page
-spiffs_cache_page *ICACHE_FLASH_ATTR spiffs_cache_page_get_by_fd(spiffs *fs, spiffs_fd *fd) {
+spiffs_cache_page *spiffs_cache_page_get_by_fd(spiffs *fs, spiffs_fd *fd) {
   spiffs_cache *cache = spiffs_get_cache(fs);
 
   if ((cache->cpage_use_map & cache->cpage_use_mask) == 0) {
@@ -230,7 +228,7 @@ spiffs_cache_page *ICACHE_FLASH_ATTR spiffs_cache_page_get_by_fd(spiffs *fs, spi
 
 // allocates a new cache page and refers this to given fd - flushes an old cache
 // page if all cache is busy
-spiffs_cache_page *ICACHE_FLASH_ATTR spiffs_cache_page_allocate_by_fd(spiffs *fs, spiffs_fd *fd) {
+spiffs_cache_page *spiffs_cache_page_allocate_by_fd(spiffs *fs, spiffs_fd *fd) {
   // before this function is called, it is ensured that there is no already existing
   // cache page with same object id
   spiffs_cache_page_remove_oldest(fs, SPIFFS_CACHE_FLAG_TYPE_WR, 0);
@@ -247,9 +245,9 @@ spiffs_cache_page *ICACHE_FLASH_ATTR spiffs_cache_page_allocate_by_fd(spiffs *fs
 }
 
 // unrefers all fds that this cache page refers to and releases the cache page
-void ICACHE_FLASH_ATTR spiffs_cache_fd_release(spiffs *fs, spiffs_cache_page *cp) {
+void spiffs_cache_fd_release(spiffs *fs, spiffs_cache_page *cp) {
   if (cp == 0) return;
-  int i;
+  u32_t i;
   spiffs_fd *fds = (spiffs_fd *)fs->fd_space;
   for (i = 0; i < fs->fd_count; i++) {
     spiffs_fd *cur_fd = &fds[i];
@@ -265,7 +263,7 @@ void ICACHE_FLASH_ATTR spiffs_cache_fd_release(spiffs *fs, spiffs_cache_page *cp
 #endif
 
 // initializes the cache
-void ICACHE_FLASH_ATTR spiffs_cache_init(spiffs *fs) {
+void spiffs_cache_init(spiffs *fs) {
   if (fs->cache == 0) return;
   u32_t sz = fs->cache_size;
   u32_t cache_mask = 0;
@@ -282,7 +280,7 @@ void ICACHE_FLASH_ATTR spiffs_cache_init(spiffs *fs) {
   spiffs_cache cache;
   memset(&cache, 0, sizeof(spiffs_cache));
   cache.cpage_count = cache_entries;
-  cache.cpages = (u8_t *)(fs->cache) + sizeof(spiffs_cache);
+  cache.cpages = (u8_t *)((u8_t *)fs->cache + sizeof(spiffs_cache));
 
   cache.cpage_use_map = 0xffffffff;
   cache.cpage_use_mask = cache_mask;
