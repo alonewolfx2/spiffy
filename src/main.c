@@ -156,7 +156,7 @@ void add_file(const char* fdir,char* fname) {
    // sprintf(path,"%s/%s", FILEDIR,fname);
 
 
-    FILE *fp = fopen(path,"r");
+    FILE *fp = fopen(path,"rb");
 
     if (fp == NULL){
         S_DBG("Skipping %s",path);
@@ -210,7 +210,7 @@ int main(int argc, char **args) {
 	const char* FILEDIR=args [2];
 	
 	printf("Creating rom %s of size %d bytes\n", ROMNAME, MAX_SIZE);
-    rom = fopen(ROMNAME,"w+");
+    rom = fopen(ROMNAME,"wb+");
     int i;
     for(i=0; i < MAX_SIZE; i++) {
         fputc(ROMERASE,rom);
