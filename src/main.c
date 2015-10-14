@@ -2,17 +2,14 @@
 #include <dirent.h>
 #include <spiffs.h>
 
-#define SPI_FLASH_SEC_SIZE 4096
 #define LOG_PAGE_SIZE       256
+#define SPI_FLASH_SEC_SIZE 4096
 
-//16k
-//#define MAX_SIZE 4*4*1024
+#define ROM_ERASE 0xFF
 
-//#define FILEDIR "files"
-#define ROMNAME "spiff_rom.bin"
-#define ROMERASE 0xFF
-static const char *FILEDIR;
-static const int MAX_SIZE;
+#define DEFAULT_FOLDER   "files"
+#define DEFAULT_ROM_NAME "spiff_rom.bin"
+#define DEFAULT_ROM_SIZE 0x30000
 
 static spiffs fs;
 static u8_t spiffs_work_buf[LOG_PAGE_SIZE*2];
@@ -20,97 +17,89 @@ static u8_t spiffs_fds[32*4];
 static u8_t spiffs_cache_buf[(LOG_PAGE_SIZE+32)*4];
 
 #define S_DBG
+//#define S_DBG printf
 
-FILE *rom;
-
+static FILE *rom = 0;
 
 void hexdump_mem(u8_t *b, u32_t len) {
-    while (len--) {
-        if ((((u32_t)b)&0x1f) == 0) {
-            S_DBG("\n");
-        }
-        S_DBG("%02x", *b++);
-    }
-    S_DBG("\n");
+	int i;
+	for (i = 0; i < len; i++) {
+		S_DBG("%02x", *b++);
+		if ((i % 16) == 15) S_DBG("\n");
+		else if ((i % 16) == 7) S_DBG(" ");
+	}
+	if ((i % 16) != 0) S_DBG("\n");
 }
-
 
 static s32_t my_spiffs_read(u32_t addr, u32_t size, u8_t *dst) {
 
-    int r = 0;
+	int res;
 
-    if(fseek(rom, addr,SEEK_SET)){
-        printf("Unable to seek to %d",addr);
-    }
+	if (fseek(rom, addr, SEEK_SET)) {
+		printf("Unable to seek to %d.\n", addr);
+		return SPIFFS_ERR_END_OF_OBJECT;
+	}
 
-    r = fread(dst,size,1,rom);
+	res = fread(dst, 1, size, rom);
+	if (res != size) {
+		printf("Unable to read - tried to get %d bytes only got %d.\n", size, res);
+		return SPIFFS_ERR_NOT_READABLE;
+	}
 
-    if(r != 1) {
-        printf("Unable to read - tried to get %d bytes only got %d\n",size,r);
-        return SPIFFS_ERR_NOT_READABLE;
-    }
-
-    S_DBG("Read %d bytes from offset %d\n",size,addr);
-//    hexdump_mem(dst,size);
-    return SPIFFS_OK;
+	S_DBG("Read %d bytes from offset %d.\n", size, addr);
+	hexdump_mem(dst, size);
+	return SPIFFS_OK;
 }
 
 static s32_t my_spiffs_write(u32_t addr, u32_t size, u8_t *src) {
-    int i;
-    u8_t *buf = malloc(size);
 
-    my_spiffs_read(addr,size,buf);
+	if (fseek(rom, addr, SEEK_SET)) {
+		printf("Unable to seek to %d.\n", addr);
+		return SPIFFS_ERR_END_OF_OBJECT;
+	}
 
-    S_DBG("Was: \n");
-    hexdump_mem(buf,size);
+	if (fwrite(src, 1, size, rom) != size) {
+		printf("Unable to write.\n");
+		return SPIFFS_ERR_NOT_WRITABLE;
+	}
 
-    S_DBG("Add: \n");
-    hexdump_mem(src,size);
+	fflush(rom);
+	S_DBG("Wrote %d bytes to offset %d.\n", size, addr);
 
-    for(i=0;i<size;i++){
-
-        buf[i] &= src[i];
-    }
-
-    S_DBG("Now:\n");
-    hexdump_mem(buf,size);
-
-    fseek(rom, addr,SEEK_SET);
-
-    if(fwrite(buf, size, 1, rom) != 1){
-        printf("Unable to write\n");
-        return SPIFFS_ERR_NOT_WRITABLE;
-    }
-    fflush(rom);
-    S_DBG("Wrote %d bytes to offset %d\n",size,addr);
-    free(buf);
-
-    return SPIFFS_OK;
+	return SPIFFS_OK;
 }
 
 static s32_t my_spiffs_erase(u32_t addr, u32_t size) {
-    int i;
 
-    fseek(rom, addr, SEEK_SET);
+	int i;
 
-    for(i=0; i< size; i++){
-        fputc(ROMERASE,rom);
-    }
-    fflush(rom);
+	if (fseek(rom, addr, SEEK_SET)) {
+		printf("Unable to seek to %d.\n", addr);
+		return SPIFFS_ERR_END_OF_OBJECT;
+	}
 
-    S_DBG("Erased %d bytes at offset %d\n",size,addr);
+	for (i = 0; i < size; i++) {
+		if (fputc(ROM_ERASE, rom) == EOF) {
+			printf("Unable to write.\n");
+			return SPIFFS_ERR_NOT_WRITABLE;
+		}
+	}
 
-    return SPIFFS_OK;
+	fflush(rom);
+	S_DBG("Erased %d bytes at offset %d.\n", size, addr);
+
+	return SPIFFS_OK;
 }
 
-void my_spiffs_mount(u32_t msize) {
+int my_spiffs_mount(u32_t msize) {
+
   spiffs_config cfg;
 
-  cfg.phys_size = msize; // use all spi flash
-  cfg.phys_addr = 0; // start spiffs at start of spi flash
+  cfg.phys_size = msize;
+  cfg.phys_addr = 0;
 
   cfg.phys_erase_block = SPI_FLASH_SEC_SIZE;
-  cfg.log_block_size = SPI_FLASH_SEC_SIZE*2;
+  cfg.log_block_size = SPI_FLASH_SEC_SIZE * 2;
   cfg.log_page_size = LOG_PAGE_SIZE;
 
   cfg.hal_read_f = my_spiffs_read;
@@ -118,122 +107,169 @@ void my_spiffs_mount(u32_t msize) {
   cfg.hal_erase_f = my_spiffs_erase;
 
   int res = SPIFFS_mount(&fs,
-          &cfg,
-          spiffs_work_buf,
-          spiffs_fds,
-          sizeof(spiffs_fds),
-          spiffs_cache_buf,
-          sizeof(spiffs_cache_buf),
-          0);
-  S_DBG("mount res: %i\n", res);
+		  &cfg,
+		  spiffs_work_buf,
+		  spiffs_fds,
+		  sizeof(spiffs_fds),
+		  spiffs_cache_buf,
+		  sizeof(spiffs_cache_buf),
+		  0);
+  S_DBG("Mount result: %d.\n", res);
+
+  if (res < SPIFFS_OK) {
+	  printf("Failed to mount spiffs, error %d.\n", res);
+	  return 0;
+  } else {
+	  return 1;
+  }
 }
 
 
-int write_to_spiffs(char *fname, u8_t *data,int size) {
+int write_to_spiffs(char *fname, u8_t *data, int size) {
 
-    spiffs_file fd = SPIFFS_open(&fs, fname, SPIFFS_CREAT | SPIFFS_TRUNC | SPIFFS_RDWR, 0);
+	int ret = 0;
+	spiffs_file fd = -1;
 
-    S_DBG("Opened spiffs file %s\n",fname);
+	fd = SPIFFS_open(&fs, fname, SPIFFS_CREAT | SPIFFS_TRUNC | SPIFFS_RDWR, 0);
+	if (fd < 0) {
+		printf("Unable to open spiffs file '%s', error %d.\n", fname, fd);
+	} else {
+		S_DBG("Opened spiffs file '%s'.\n", fname);
+		if (SPIFFS_write(&fs, fd, (u8_t *)data, size) < SPIFFS_OK) {
+			printf("Unable to write to spiffs file '%s', errno %d.\n", fname, SPIFFS_errno(&fs));
+		} else {
+			ret = 1;
+		}
+	}
 
-    if (SPIFFS_write(&fs, fd, (u8_t *)data, size) < 0) {
-        printf("Unable to write file %s - errno %i\n", fname, SPIFFS_errno(&fs));
-
-        return 1;
-    }
-
-    SPIFFS_close(&fs, fd);
-    S_DBG("Closed spiffs file %s\n",fname);
-    return 0;
+	if (fd >= 0) {
+		SPIFFS_close(&fs, fd);
+		S_DBG("Closed spiffs file '%s'.\n", fname);
+	}
+	return ret;
 }
 
-void add_file(const char* fdir,char* fname) {
+int add_file(const char* fdir, char* fname) {
 
-    int sz;
-    u8_t *buf;
-    char *path = malloc(1024);
+	int ret = 0;
+	int size;
+	u8_t *buff = 0;
+	FILE *fp = 0;
+	char *path = 0;
 
-	sprintf(path,"%s/%s", fdir,fname);
-   // sprintf(path,"%s/%s", FILEDIR,fname);
+	path = malloc(1024);
+	if (!path) {
+		printf("Unable to malloc %d bytes.\n", 1024);
+	} else {
+		sprintf(path, "%s/%s", fdir, fname);
+		fp = fopen(path, "rb");
+		if (!fp) {
+			S_DBG("Unable to open '%s'.\n", path);
+		} else {
+			fseek(fp, 0L, SEEK_END);
+			size = ftell(fp);
+			fseek(fp, 0L, SEEK_SET);
+			buff = malloc(size);
+			if (!buff) {
+				printf("Unable to malloc %d bytes.\n", size);
+			} else {
+				if (fread(buff, 1, size, fp) != size) {
+					printf("Unable to read file '%s'.\n", fname);
+				} else {
+					S_DBG("%d bytes read from '%s'.\n", size, fname);
+					if (write_to_spiffs(fname, buff, size)) {
+						printf("Added '%s' to spiffs (%d bytes).\n", fname, size);
+						ret = 1;
+					}
+				}
+			}
+		}
+	}
 
+	if (buff) free(buff);
+	if (path) free(path);
+	if (fp) fclose(fp);
 
-    FILE *fp = fopen(path,"rb");
-
-    if (fp == NULL){
-        S_DBG("Skipping %s",path);
-        return;
-    }
-
-    fseek(fp, 0L, SEEK_END);
-    sz = ftell(fp);
-    fseek(fp, 0L, SEEK_SET);
-
-    if (sz == -1) {
-        //directory
-        return;
-    }
-
-    buf = malloc(sz);
-
-    if(fread(buf,sz,1,fp) != 1) {
-        printf("Unable to read file %s\n",fname);
-        return;
-    }
-
-    S_DBG("%d bytes read from %s\n",sz,fname);
-
-    write_to_spiffs(fname, buf,sz);
-
-    printf("%s added to spiffs (%d bytes)\n",fname,sz);
-
-    free(buf);
-    fclose(fp);
-
+	return ret;
 }
 
-int get_rom_size (char *str) {
-	char *endptr;
-    long val;
+int get_rom_size (const char *str) {
 
-    val = strtol(str, &endptr, 10);
-    return (int) val;
+	long val;
+
+	// accept decimal or hex, but not octal
+	if ((strlen(str) > 2) && (str[0] == '0') &&
+		(((str[1] == 'x')) || ((str[1] == 'X')))) {
+		val = strtol(str, NULL, 16);
+	} else {
+		val = strtol(str, NULL, 10);
+	}
+
+	return (int)val;
 }
 
-int main(int argc, char **args) {
-	if (argc != 3) {
-			args [1]="196608";
-			args [2]="files";
-        printf ("Usage: %s maxFsSizeinByte spiffsBaseDir\n", args[0]);
-		printf ("There is no specific size or files directory.\nStarting in compatibility mode.\nDefault fs size is 196608 and directory is files.\n", args[0]);
-		//exit (EXIT_FAILURE);
-    }
-	const int MAX_SIZE=get_rom_size (args [1]);
-	const char* FILEDIR=args [2];
-	
-	printf("Creating rom %s of size %d bytes\n", ROMNAME, MAX_SIZE);
-    rom = fopen(ROMNAME,"wb+");
-    int i;
-    for(i=0; i < MAX_SIZE; i++) {
-        fputc(ROMERASE,rom);
-    }
-    fflush(rom);
+int main(int argc, char **argv) {
 
-    my_spiffs_mount(MAX_SIZE);
+	const char *sizestr;
+	const char *folder;
+	const char *romfile;
+	int romsize;
 
-    printf("Adding files in directory %s\n", FILEDIR);
-    DIR *dir;
-    struct dirent *ent;
-    if ((dir = opendir (FILEDIR)) != NULL) {
-        /* print all the files and directories within directory */
-        while ((ent = readdir (dir)) != NULL) {
-            add_file(FILEDIR,ent->d_name);
-        }
-        closedir (dir);
-    } else {
-        /* could not open directory */
-        printf("Unable to open directory %s\n", FILEDIR);
-        return EXIT_FAILURE;
-    }
+	if (argc == 1) {
+		romsize = DEFAULT_ROM_SIZE;
+		folder = DEFAULT_FOLDER;
+		romfile = DEFAULT_ROM_NAME;
+		printf("Usage: %s maxFsSizeinByte spiffsBaseDir [outfile.bin]\n"
+			   "There is no specific size or files directory.\n"
+			   "Starting in compatibility mode.\n"
+			   "Default fs size is 0x%x (%d) bytes and directory is '%s'.\n",
+			   argv[0], romsize, romsize, DEFAULT_FOLDER);
+	} else if (argc == 3) {
+		romsize = get_rom_size(argv[1]);
+		folder = argv[2];
+		romfile = DEFAULT_ROM_NAME;
+	} else if (argc == 4) {
+		romsize = get_rom_size(argv[1]);
+		folder = argv[2];
+		romfile = argv[3];
+	} else {
+		printf ("Usage: %s <FsSizeInBytes> <FilesDir> [OutFile.bin]\n", argv[0]);
+		exit(EXIT_FAILURE);
+	}
 
-    fclose(rom);
-    exit(EXIT_SUCCESS);
+	printf("Creating rom '%s' of size 0x%x (%d) bytes.\n", romfile, romsize, romsize);
+	rom = fopen(romfile, "wb+");
+
+	if (!rom) {
+		printf("Unable to open file '%s' for writing.\n", romfile);
+	} else {
+
+		int i;
+		for (i = 0; i < romsize; i++) {
+			fputc(ROM_ERASE, rom);
+		}
+		fflush(rom);
+
+		if (my_spiffs_mount(romsize)) {
+			printf("Adding files in directory '%s'.\n", folder);
+			DIR *dir;
+			struct dirent *ent;
+			if ((dir = opendir(folder)) != NULL) {
+				while ((ent = readdir(dir)) != NULL) {
+					if (ent->d_type == DT_REG) {
+						add_file(folder, ent->d_name);
+					}
+				}
+				closedir(dir);
+			} else {
+				printf("Unable to open directory '%s'.\n", folder);
+				fclose(rom);
+				unlink(romfile);
+				exit(EXIT_FAILURE);
+			}
+		}
+	}
+
+	if (rom) fclose(rom);
+	exit(EXIT_SUCCESS);
 }

@@ -86,3 +86,5 @@ clean:
 	@rm -f ${builddir}/*.o
 	@rm -f ${builddir}/*.d
 	@rm -f ${builddir}/*.elf
+	@rm -f ${builddir}/spiffy
+	@rm -f ${builddir}/spiffy.exe
